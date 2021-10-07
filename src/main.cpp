@@ -3,15 +3,13 @@
 #include <PubSubClient.h>
 #include "ESPAsyncWebServer.h"
 #include "wificonfigmanager.h"
-
-#if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
-#error Bluetooth is not enabled! Please run `make menuconfig` to and enable it
-#endif
+#include "lightmanager.h"
 
 WifiConfigManager wifiManager;
 AsyncWebServer server(80);
 WiFiClient espClient;
 PubSubClient client(espClient);
+LightController lightController;
 
 String header;
 void callback(char* topic, byte* message, unsigned int length) {
@@ -69,6 +67,9 @@ void setup() {
       }
   });
   delay(1000);
+  if(lightController.begin() != 0){
+    Serial.println("Something went wrong with the lights");
+  }
   if(wifiManager.begin()){
     //we are in the not connected to wifi state, start web server up
     Serial.println("Starting async server");
