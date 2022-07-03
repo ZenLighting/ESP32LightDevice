@@ -2,10 +2,12 @@
  *  This sketch sends random data over UDP on a ESP32 device
  *
  */
-#include <WiFi.h>
+//#include <WiFi.h>
+#include <ESP8266WiFi.h>
 #include <WiFiUdp.h>
-#include <SPIFFS.h>
-#include <Adafruit_NeoPixel.h>
+#include <FS.h>
+//#include <Adafruit_NeoPixel.h>
+#include <FastLED.h>
 
 // ========================= configfiles.h ===================
 
@@ -30,7 +32,7 @@ class WifiConfigFile{
 int WifiConfigFile::begin(){
     //SPIFFS must be initialized
     //make sure the file exists
-    File file = SPIFFS.open("/network.txt");
+    File file = SPIFFS.open("/network.txt", "r");
     if(!file){
         Serial.println("network.txt was not available for reading");
         return -1;
@@ -66,7 +68,7 @@ class LightConfigFile{
 int LightConfigFile::begin(){
     //SPIFFS must be initialized
     //make sure the file exists
-    File file = SPIFFS.open("/lights.txt");
+    File file = SPIFFS.open("/lights.txt", "r");
     if(!file){
         Serial.println("lights.txt was not available for reading");
         return -1;
@@ -81,81 +83,6 @@ int LightConfigFile::begin(){
     return 1;
 }
 
-// =================== end config.h =================================
-// =================== begin broadcaster.h ==========================
-class UDPBroadcastManager{
-    public:
-        int begin(
-            unsigned long delay,
-            WiFiUDP udp,
-            int broadcast_port,
-            String hwid
-        );
-        int tick(unsigned long current_time);
-    private:
-        int delay_between;
-        int broadcast_port;
-        WiFiUDP udp;
-        unsigned long start_time;
-        unsigned long timed_event;
-        IPAddress broadcastAddress;
-        String hwid;
-        char messageBuffer[1024];
-};
-
-/**
- * @param delay, int, the time in ms between each broadcast
- * @param udp, WiFiUDP, the interface for udp messaging
- */
-int UDPBroadcastManager::begin(unsigned long delay, WiFiUDP udp, int broadcast_port, String hwId){
-    this->delay_between = delay;
-    this->udp = udp;
-    this->timed_event = delay;
-    this->start_time = millis();
-    this->broadcast_port = broadcast_port;
-    this->hwid = hwid;
-    this->broadcastAddress = WiFi.broadcastIP();
-    Serial.println(this->broadcastAddress);
-    return 1;
-}
-
-int UDPBroadcastManager::tick(unsigned long current_time){
-    //Serial.printf("%d %d %d\n", current_time, start_time, timed_event);
-    if(current_time - start_time >= timed_event){
-        //we need to broadcast
-        Serial.println("Broadcasting");
-        sprintf(
-            this->messageBuffer, 
-            "{"
-                "\"hwid\":\"%s\","
-                "\"lights\": {"
-                    "\"length\": %d,"
-                    "\"state\": \"\""
-                "},"
-                "\"service\": {"
-                    "\"registry\": %s,"
-                    "\"comm_state\": %s"
-                "}"
-            "}",
-            this->hwid.c_str(),
-            0,
-            "not set",
-            "not set"
-        );
-        Serial.println(this->messageBuffer);
-        //ssize_t lengthSent = this->udp.broadcastTo(messageBuffer, this->broadcast_port);
-        int beginPacket = this->udp.beginPacket(this->broadcastAddress, this->broadcast_port);
-        size_t writeLength = this->udp.write((uint8_t*)this->messageBuffer, strlen(this->messageBuffer));
-        int endPacket = this->udp.endPacket();
-        Serial.printf("B: %d, L: %d, E: %d\n", beginPacket, writeLength, endPacket);
-        //ssize_t lengthSent = this->udp.writeTo((uint8_t*)this->messageBuffer, strlen(this->messageBuffer), IPAddress(255,255,255,255),this->broadcast_port);
-        //Serial.printf("Send %d bytes on port %d\n", lengthSent, this->broadcast_port);
-        this->start_time = current_time;
-    }
-    return 1;
-}
-// =================== end broadcaster.h ============================
-// =================== start timer.h ================================
 class Timer{
     public:
         Timer(unsigned long delayms, void (*runnable)(unsigned long));
@@ -181,6 +108,9 @@ void Timer::tick(unsigned long current_time){
 
 // ==================== global defs
 
+#define LEDPIN 13
+#define LEDLENGTH 38
+
 WifiConfigFile wifiConfig;
 LightConfigFile lightConfig;
 //UDPBroadcastManager broadcaster;
@@ -195,10 +125,12 @@ const char * udpAddress = "192.168.1.255";
 const int udpPort = 1261;
 const int broadcastPort = 1260;
 const int messageBufferLength = 200;
-String hwId = "ESPLightDevice1";
+String hwId = "RingLightDevice";
 char messageBuffer[messageBufferLength];
 int messageSize;
-Adafruit_NeoPixel* lightStrip;
+CRGB leds[LEDLENGTH];
+//Adafruit_NeoPixel* lightStrip;
+IPAddress broadcastAddress;
 
 //Are we currently connected?
 boolean connected = false;
@@ -216,21 +148,27 @@ void registerWithServer(unsigned long currentTime){
 //wifi event handler
 void WiFiEvent(WiFiEvent_t event){
     switch(event) {
-      case SYSTEM_EVENT_STA_GOT_IP:
-          //When connected set 
+      case WL_CONNECTED: {
+          //When connected set
+          IPAddress localaddr = WiFi.localIP();
+          broadcastAddress = IPAddress(localaddr[0], localaddr[1], localaddr[2], 255);
           Serial.print("WiFi connected! IP address: ");
           Serial.println(WiFi.localIP());  
           //initializes the UDP state
           //This initializes the transfer buffer
-          udp.begin(WiFi.localIP(),udpPort);
+          udp.begin(udpPort);
           //broadcaster.begin(1000, udp, broadcastPort, hwId);
           connected = true;
           break;
-      case SYSTEM_EVENT_STA_DISCONNECTED:
+      }
+      case WL_DISCONNECTED:
+      {
           Serial.println("WiFi lost connection");
           connected = false;
           break;
-      default: break;
+      }
+      default: 
+        break;
     }
 }
 
@@ -244,30 +182,18 @@ void connectToWiFi(const char * ssid, const char * pwd){
   
   //Initiate connection
   WiFi.begin(ssid, pwd);
+  /**while(WiFi.status() != WL_CONNECTED){
+    Serial.print(".");
+    delay(1000);
+  }
+  Serial.println("Connected");**/
 
   Serial.println("Waiting for WIFI connection...");
 }
 
 void sendBroadcast(unsigned long currentTime){
-    udp.beginPacket(WiFi.broadcastIP(), udpPort);
-    /*sprintf(
-        messageBuffer, 
-        "{"
-            "\"hwid\":\"%s\","
-            "\"lights\": {"
-                "\"length\": %d,"
-                "\"state\": \"\""
-            "},"
-            "\"service\": {"
-                "\"registry\": %s,"
-                "\"comm_state\": %s"
-            "}"
-        "}",
-        wifiConfig.hwid,
-        lightStrip->numPixels(),
-        "not set",
-        "not set"
-    );*/
+    Serial.println("Broadcasting");
+    udp.beginPacket(broadcastAddress, broadcastPort);
     sprintf(
         messageBuffer, 
         "{"
@@ -280,7 +206,7 @@ void sendBroadcast(unsigned long currentTime){
             "}"
         "}",
         wifiConfig.hwid,
-        lightStrip->numPixels()
+        LEDLENGTH
     );
     udp.println(messageBuffer);
     //Serial.println(messageBuffer);
@@ -304,13 +230,14 @@ void handleSetLight(char* messageBuffer, int messageLength){
     if(messageBuffer[0] == LIGHT_BYTES){
         // we take the buffer as raw data and put it into the lights
         // it is encoded as rgb for each pixel -1 for light encoding info
-        if(messageLength-1 == lightStrip->numPixels()*3){
-            uint8_t* pixelStrip = lightStrip->getPixels();
-            memcpy(pixelStrip, &messageBuffer[1], messageLength-1);
-            lightStrip->show();
+        if(messageLength-1 == LEDLENGTH*3){
+            //uint8_t* pixelStrip = lightStrip->getPixels();
+            memcpy(leds, &messageBuffer[1], messageLength-1);
+            FastLED.show();
+            //lightStrip->show();
             return;
         } else{
-            Serial.printf("Incorrect size to push to pixels: %d, should be %d", messageLength-1, lightStrip->numPixels()*3);
+            Serial.printf("Incorrect size to push to pixels: %d, should be %d", messageLength-1, LEDLENGTH*3);
             return;
         }
     } else if(messageBuffer[0] == LIGHT_STRING){
@@ -348,13 +275,19 @@ void setup(){
   lightConfig.begin();
   //Connect to the WiFi network
   connectToWiFi(wifiConfig.ssid, wifiConfig.password);
+  Serial.printf("STARTING PIXELS");
+  Serial.printf("%d %d \n", lightConfig.stripLength, lightConfig.pin);
+  //unfortunately cant change led lengths
+  FastLED.addLeds<WS2812, LEDPIN>(leds, LEDLENGTH);
 
-  lightStrip = new Adafruit_NeoPixel(lightConfig.stripLength, lightConfig.pin, NEO_GRB + NEO_KHZ800);
-  lightStrip->begin();
+  //lightStrip = new Adafruit_NeoPixel(lightConfig.stripLength, lightConfig.pin, NEO_GRB + NEO_KHZ800);
+  Serial.println("HERE");
+  Serial.printf("ENDING PIXEL SETUP");
 }
 
 void loop(){
   //only send data when connected
+  //Serial.println("Looping");
   if(connected){
     current_time = millis();
     registerTimer.tick(current_time);
